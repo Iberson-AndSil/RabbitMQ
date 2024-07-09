@@ -44,6 +44,10 @@ async function verificarEstadowalletApi() {
     }
 }
 
+if (verificarEstadowalletApi) {
+    console.log("ACTIVAAAAAAAAA");
+}
+
 async function sendToQueue() {
     let conn;
     try {
@@ -96,9 +100,7 @@ async function sendToQueue() {
         await channel.bindQueue(queue10m, exchange, 'apuestas_10m');
         await channel.bindQueue(queue1h, exchange, 'apuestas_1h');
         await channel.bindQueue(queue1d, exchange, 'apuestas_1d');
-        await channel.bindQueue(finalQueue, exchange, 'USUARIO');
-
-        await monitorQueues(channel);
+        await channel.bindQueue(finalQueue, exchange, 'apuestas');
 
         return channel;
 
@@ -108,30 +110,6 @@ async function sendToQueue() {
             conn.close();
         }
         throw error;
-    }
-}
-
-async function monitorQueues(channel) {
-    const queues = [queue1m, queue10m, queue1h, queue1d, finalQueue];
-    for (const queue of queues) {
-        await channel.consume(queue, async (msg) => {
-            if (msg !== null) {
-                console.log(`Mensaje recibido en la cola ${queue}: ${msg.content.toString()}`);
-
-                const messageContent = JSON.parse(msg.content.toString());
-                try {
-                    const response = await axios.post('http://localhost:8081/wallet', {
-                        message: messageContent.mensaje,
-                        userDni: messageContent.dni
-                    });
-                    console.log(`Respuesta de la API de wallet para ${queue}:`, response.data);
-                    channel.ack(msg);
-                    console.log("Mensaje eliminado");
-                } catch (error) {
-                    console.error(`Error al llamar a la API de wallet para la cola ${queue}:`, error.message);
-                }
-            }
-        });
     }
 }
 
@@ -148,12 +126,13 @@ app.post('/user', async (req, res) => {
             const walletApiActivo = await verificarEstadowalletApi();
 
             if (walletApiActivo) {
+                console.log("está activooooooooooo");
                 // Si wallet_api está activo, procesa directamente la apuesta
                 const response = await axios.post('http://localhost:8081/wallet', {
                     message: user.mensaje,
                     userDni: user.dni
                 });
-
+                console.log("enviado directamente");
                 res.send('Apuesta realizada directamente');
             } else {
                 // Si wallet_api está inactivo, encola la apuesta
@@ -176,3 +155,46 @@ app.post('/user', async (req, res) => {
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
 });
+
+async function consumirApuesta() {
+
+    try {
+        const conn = await amqp.connect(rabbitSettings);
+        console.log("Conexión creada...");
+
+        const channel = await conn.createChannel();
+        console.log("Canal creado...");
+
+        console.log("Escuchando A Rabbit");
+
+        const processMessage = async (msg) => {
+            const bet = JSON.parse(msg.content.toString());
+            console.log("APUESTA RECIBIDA");
+            console.log(bet);
+            try {
+                const response = await axios.post("http://localhost:8081/wallet", {
+                    message: bet.mensaje,
+                    userDni: bet.dni
+                    
+                });
+                console.log("Respuesta de la API de wallet:", response.data);
+                channel.ack(msg);
+            } catch (error) {
+                console.error("Error al conectar a la API de wallet:", error.message);
+                // Puedes decidir no ack el mensaje para que se vuelva a intentar
+                // channel.nack(msg); 
+            }
+        };
+
+        const queues = [queue1m, queue10m, queue1h, queue1d, finalQueue];
+
+        for (const queue of queues) {
+            channel.consume(queue, processMessage);
+        }
+
+    } catch (error) {
+        console.error("Error al conectar a RabbitMQ:", error.message);
+    }
+}
+
+consumirApuesta();
